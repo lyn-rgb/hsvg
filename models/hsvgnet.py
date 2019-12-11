@@ -24,13 +24,17 @@ class hsvgnet(nn.Module):
         self.nlevel = opts.nlevel or 1
         self.zdims = opts.z_dims or [64]
         self.rsize = opts.rnn_size or 128
-        self.postlayers = opts.posterior_rnn_nlayers or 1
-        self.priorlayers = opts.prior_rnn_nlayers or 1
+        self.rnnlayers = opts.rnn_nlayers or [1]
+        #self.postlayers = opts.posterior_rnn_nlayers or [1]
+        #self.priorlayers = opts.prior_rnn_nlayers or [1]
         self.batchsize = opts.batchsize or 8
         self.gdim = opts.g_dim or 128
         self.total_dim = 0
         for z_dim in self.zdims:
             self.total_dim = self.total_dim + z_dim
+        
+        self.rec_criterion = opts.rec_criterion or None
+        self.kl_criterion = opts.kl_criterion or None
         # -------------------------------------- construct hsvgnet
         ## Encoder & Decoder
         if self.mtype == 'vgg':
@@ -64,24 +68,54 @@ class hsvgnet(nn.Module):
                                            nn.Tanh())
         self.hsvg_layer = nn.Linear(self.gdim, self.total_dim)
         ## posterior rnn
-
-
-
+        self.posterior = lstm.multi_level(self.zdims, self.rnnlayers, self.rsize)
         ## prior rnn
+        self.prior = lstm.multi_level(self.zdims, self.rnnlayers, self.rsize)
+        ## skip connect
         self.skips = None
 
-    def forward(self, x, update_skips=False, ts=0):
-        if update_skips or self.skips==None:
-            _, self.skips = self.encoder(x)
-        else:
-
+    def forward(self, x):
 
         return rec_x
     
     def inference(self, x, update_skips=False):
+        ## Encoding
+        _, feats = self.encoder(x)
+        
+        f1 = self.L1(feats[-3])
+        f2 = self.L2(feats[-2])
+        f3 = self.L3(feats[-1])
+        h = self.out_layer(torch.cat([f1, f2, f3], dim=1)).view(-1, self.gdim)
 
 
+        
+
+        if updata_skips:
+            self.skips = feats
         return pred_x
+    
+    def init_hidden(self, batchsize):
+        self.posterior.init_hidden_states(batchsize)
+        self.prior.init_hidden_states(batchsize)
+    
+    def init(self, x):
+        ## processing the first given frame
+        ### Initialize the hidden states in lstm models
+        bs = x.size(0)
+        self.init_hidden(bs)
+        ### Encoding
+        _, feats = self.encoder(x)
+        f1 = self.L1(feats[-3])
+        f2 = self.L2(feats[-2])
+        f3 = self.L3(feats[-1])
+        h = self.out_layer(torch.cat([f1, f2, f3], dim=1)).view(-1, self.gdim)
+        ### initialize posterior
+        z_init, mus_init, logvars_init = self.posterior(h)
+        self.z_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+
+        self.skips = feats
+
+
 
 
 
