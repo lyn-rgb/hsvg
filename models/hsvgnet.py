@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-import lstm
+import hier_lstm as lstm
 import utils
 
 def make_layer(in_channels, scale_factor=1):
@@ -25,8 +25,6 @@ class hsvgnet(nn.Module):
         self.zdims = opts.z_dims or [64]
         self.rsize = opts.rnn_size or 128
         self.rnnlayers = opts.rnn_nlayers or [1]
-        #self.postlayers = opts.posterior_rnn_nlayers or [1]
-        #self.priorlayers = opts.prior_rnn_nlayers or [1]
         self.batchsize = opts.batchsize or 8
         self.gdim = opts.g_dim or 128
         self.total_dim = 0
@@ -68,50 +66,80 @@ class hsvgnet(nn.Module):
                                            nn.Tanh())
         self.hsvg_layer = nn.Linear(self.gdim, self.total_dim)
         ## posterior rnn
-        self.posterior = lstm.multi_level(self.zdims, self.rnnlayers, self.rsize)
+        self.posterior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsize)
         ## prior rnn
-        self.prior = lstm.multi_level(self.zdims, self.rnnlayers, self.rsize)
+        self.prior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsize)
+        ## predictor rnn
+        self.predictor = lstm.multi_level_predictor(self.gdim, self.zdims, self.rnnlayers, self.rsize)
         ## skip connect
         self.skips = None
+        self.prev_h = None
 
-    def forward(self, x):
+    def forward(self, x, update_skips=False):
+        ## forward
+        # encoding
+        h, feats = self.encoding(x)
+        # recurrence 
+        zs, mus, logvars = self.posterior(h)
+        hs_rec = self.predictor(self.prev_h, zs)
+        # decoding
+        x_rec = self.decoding(hs_rec, self.skips)
+        ## Losses
+        # rec loss
+        mse = self.rec_criterion(x_rec, x)
+        # kl loss
+        kld = 0.0
+        for mu, logvar, mu_p, logvar_p in zip(mus, logvars, self.mus_prior, self.logvars_prior):
+            kld += self.kl_criterion(mu, logvar, mu_p, logvar_p)
+        ## setting info
+        self.prev_h = h
+        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+        if update_skips:
+            self.skips = feats
 
-        return rec_x
+        return x_rec, mse, kld
     
-    def inference(self, x, update_skips=False):
-        ## Encoding
+    def encoding(self, x):
         _, feats = self.encoder(x)
-        
         f1 = self.L1(feats[-3])
         f2 = self.L2(feats[-2])
         f3 = self.L3(feats[-1])
         h = self.out_layer(torch.cat([f1, f2, f3], dim=1)).view(-1, self.gdim)
+        return h, feats
+    
+    def decoding(self, hs, skips):
+        h = torch.cat(hs, -1)
+        return self.decoder(h skips)
 
-
-        
-
+    def inference(self, x, update_skips=False):
+        ## forward
+        # encoding
+        h, feats = self.encoding(x)
+        # recurrence
+        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+        hs_pred = self.predictor(h, zs)
+        # decoding
+        ## setting info
         if updata_skips:
             self.skips = feats
-        return pred_x
+        x_pred = self.decoding(hs_pred, self.skips)
+        
+        return x_pred
     
-    def init_hidden(self, batchsize):
+    def init_rnns(self, batchsize):
         self.posterior.init_hidden_states(batchsize)
         self.prior.init_hidden_states(batchsize)
     
-    def init(self, x):
+    def init_states(self, x):
         ## processing the first given frame
         ### Initialize the hidden states in lstm models
         bs = x.size(0)
-        self.init_hidden(bs)
+        self.init_rnns(bs)
         ### Encoding
-        _, feats = self.encoder(x)
-        f1 = self.L1(feats[-3])
-        f2 = self.L2(feats[-2])
-        f3 = self.L3(feats[-1])
-        h = self.out_layer(torch.cat([f1, f2, f3], dim=1)).view(-1, self.gdim)
+        h, feats = self.encoding(x)
         ### initialize posterior
-        z_init, mus_init, logvars_init = self.posterior(h)
-        self.z_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+        zs_init, mus_init, logvars_init = self.posterior(h)
+        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
 
         self.skips = feats
 
