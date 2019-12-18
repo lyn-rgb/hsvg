@@ -265,6 +265,15 @@ def train(x):
     return mse.data.cpu().numpy()/(opt.n_past+opt.n_future), kld.data.cpu().numpy()/(opt.n_future+opt.n_past)
 
 def main():
+    # --------- logging ------------------------------------------
+    if not os.path.exists(checkpoint_dir+'/train_log'):
+        os.mkdir(checkpoint_dir+'/train_log')
+    train_writer = SummaryWriter(checkpoint_dir+'/train_log') 
+    '''
+    if not os.path.exists(checkpoint_dir+'/test_log'):
+        os.mkdir(checkpoint_dir+'/test_log')
+    test_writer = SummaryWriter(checkpoint_dir+'/test_log')
+    '''
     # --------- random seed --------------------------------------
     print("Random Seed: ", opt.seed)
     random.seed(opt.seed)
@@ -316,51 +325,58 @@ def main():
         print('No matching checkpoint file found')
     # --------- training loop ------------------------------------
     for epoch in range(start_epoch, opt.nepochs):
-        frame_predictor.train()
-        posterior.train()
-        prior.train()
-        encoder.train()
-        decoder.train()
-        epoch_mse = 0
+        hsvg_net.train()
+
+        epoch_rec = 0
         epoch_kld = 0
-        progress = progressbar.ProgressBar(max_value=opt.epoch_size).start()
+        #progress = progressbar.ProgressBar(max_value=opt.epoch_size).start()
         
+        info_dict = {'REC Loss':0.0, 'KLD Loss':0.0}
+        describe = '[Epoch {:04d}]:'.format(epoch)
+        pbar = tqdm(total=opt.epoch_size, desc = describe)
         for i in range(opt.epoch_size):
-            progress.update(i+1)
+            #progress.update(i+1)
             x = next(training_batch_generator)
 
             # train frame_predictor 
-            mse, kld = train(x)
-            epoch_mse += mse
+            rec, kld = train(hsvg_net, hsvg_optimizer, x)
+            
+            epoch_rec += rec
             epoch_kld += kld
+            
+            train_writer.add_scalar('rec loss', rec, i + opt.epoch_size*epoch)
+            train_writer.add_scalar('kld loss', kld, i + opt.epoch_size*epoch)
+            
+            info_dict['REC Loss'] = rec
+            info_dict['KLD Loss'] = kld
+            pbar.set_postfix(info_dict)
+            pbar.update(1)
+            
 
+        hsvg_lr_sched.step()
+        pbar.close()
+        #progress.finish()
+        #utils.clear_progressbar()
 
-        progress.finish()
-        utils.clear_progressbar()
-
-        print('[%02d] mse loss: %.5f | kld loss: %.5f (%d)' % (epoch, epoch_mse/opt.epoch_size, epoch_kld/opt.epoch_size, epoch*opt.epoch_size*opt.batch_size))
+        print('[%02d] rec loss: %.5f | kld loss: %.5f (%d)' % (epoch, epoch_rec/opt.epoch_size, epoch_kld/opt.epoch_size, epoch*opt.epoch_size*opt.batch_size))
 
         # plot some stuff
-        frame_predictor.eval()
-        #encoder.eval()
-        #decoder.eval()
-        posterior.eval()
-        prior.eval()
-    
-        x = next(testing_batch_generator)
-        plot(x, epoch)
-        plot_rec(x, epoch)
+        hsvg_net.eval()
+        with torch.no_grad():
+            x = next(testing_batch_generator)
+            plot(hsvg_net, x, epoch)
+            plot_rec(hsvg_net, x, epoch)
 
         # save the model
-        torch.save({
-            'encoder': encoder,
-            'decoder': decoder,
-            'frame_predictor': frame_predictor,
-            'posterior': posterior,
-            'prior': prior,
-            'opt': opt},
-            '%s/model.pth' % opt.log_dir)
-        if epoch % 10 == 0:
-            print('log dir: %s' % opt.log_dir)
-        
+        if (epoch + 1)%10 == 0:
+            file_path = '{}/hsvgnet_ep{:04d}.pth.tar'.format(checkpoint_dir, epoch)
+            torch.save({
+                'epoch': epoch,
+                'hsvg_net': hsvg_net.state_dict(),
+                'hsvg_optimizer': hsvg_optimizer},
+                file_path)
+            print('{} was saved.'.format(file_path))
+
+    train_writer.export_scalars_to_json(checkpoint_dir + "/train_log/train_summery.json")
+    train_writer.close()
 
