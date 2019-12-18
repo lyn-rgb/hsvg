@@ -23,13 +23,17 @@ class hsvgnet(nn.Module):
         self.mtype = opts.model_type or 'dcgan'
         self.nlevel = opts.nlevel or 1
         self.zdims = opts.z_dims or [64]
-        self.rsize = opts.rnn_size or 128
+        self.odims = opts.o_dims or [64]
+        self.rsizes = opts.rnn_size or [128]
         self.rnnlayers = opts.rnn_nlayers or [1]
-        self.batchsize = opts.batchsize or 8
+        #self.batchsize = opts.batchsize or 8
         self.gdim = opts.g_dim or 128
         self.total_dim = 0
         for z_dim in self.zdims:
             self.total_dim = self.total_dim + z_dim
+        self.total_out_dim = 0
+        for o_dim in self.odims:
+            self.total_out_dim = self.total_out_dim + o_dim
         
         self.rec_criterion = opts.rec_criterion or None
         self.kl_criterion = opts.kl_criterion or None
@@ -47,7 +51,7 @@ class hsvgnet(nn.Module):
                 import dcgan_64 as backbone
         
         self.encoder = backbone.encoder(self.gdim, self.ichan)
-        self.decoder = backbone.decoder(self.gdim, self.ichan)
+        self.decoder = backbone.decoder(self.total_out_dim, self.ichan)
 
         ## multi-level features
         if self.isize == 128:
@@ -55,22 +59,22 @@ class hsvgnet(nn.Module):
             self.L2 = make_layer(512, 4)
             self.L3 = make_layer(512, 2)
             self.out_layer = nn.Sequential(nn.Conv2d(640, self.gdim, 4, 1, 0),
-                                           nn.BatchNorm2d(self.gdim),
+                                           #nn.BatchNorm2d(self.gdim),
                                            nn.Tanh())
         else:
             self.L1 = make_layer(128, 8)
             self.L2 = make_layer(256, 4)
             self.L3 = make_layer(512, 2)
             self.out_layer = nn.Sequential(nn.Conv2d(448, self.gdim, 4, 1, 0),
-                                           nn.BatchNorm2d(self.gdim),
+                                           #nn.BatchNorm2d(self.gdim),
                                            nn.Tanh())
         self.hsvg_layer = nn.Linear(self.gdim, self.total_dim)
         ## posterior rnn
-        self.posterior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsize)
+        self.posterior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsizes)
         ## prior rnn
-        self.prior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsize)
+        self.prior = lstm.multi_level_gaussian(self.gdim, self.zdims, self.rnnlayers, self.rsizes)
         ## predictor rnn
-        self.predictor = lstm.multi_level_predictor(self.gdim, self.zdims, self.rnnlayers, self.rsize)
+        self.predictor = lstm.multi_level_predictor(self.gdim, self.gdim//8, self.zdims, self.odims, self.rnnlayers, self.rsizes)
         ## skip connect
         self.skips = None
         self.prev_h = None
@@ -126,9 +130,10 @@ class hsvgnet(nn.Module):
         
         return x_pred
     
-    def init_rnns(self, batchsize):
-        self.posterior.init_hidden_states(batchsize)
-        self.prior.init_hidden_states(batchsize)
+    def init_rnns(self, batch_size):
+        self.posterior.init_hidden_states(batch_size)
+        self.prior.init_hidden_states(batch_size)
+        self.predictor.init_hidden_states(batch_size)
     
     def init_states(self, x):
         ## processing the first given frame
