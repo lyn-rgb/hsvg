@@ -36,7 +36,7 @@ class hsvgnet(nn.Module):
             self.total_out_dim = self.total_out_dim + o_dim
         
         self.rec_criterion = opts.rec_criterion or None
-        self.kl_criterion = opts.kl_criterion or None
+        self.kld_criterion = opts.kld_criterion or None
         # -------------------------------------- construct hsvgnet
         ## Encoder & Decoder
         if self.mtype == 'vgg':
@@ -89,19 +89,24 @@ class hsvgnet(nn.Module):
         # decoding
         x_rec = self.decoding(hs_rec, self.skips)
         ## Losses
-        # rec loss
-        mse = self.rec_criterion(x_rec, x)
-        # kl loss
+        rec = 0.0
         kld = 0.0
-        for mu, logvar, mu_p, logvar_p in zip(mus, logvars, self.mus_prior, self.logvars_prior):
-            kld += self.kl_criterion(mu, logvar, mu_p, logvar_p)
+        if self.rec_criterion is not None:
+            # rec loss
+            rec = self.rec_criterion(x_rec, x)
+            # kl loss
+            posterior_mu = torch.cat(mus, -1)
+            posterior_logvar = torch.cat(logvars, -1)
+            prior_mu = torch.cat(self.mus_prior, -1)
+            prior_logvar = torch.cat(self.logvars_prior, -1)
+            kld = self.kld_criterion(posterior_mu, posterior_logvar, prior_mu, prior_logvar)
         ## setting info
         self.prev_h = h
         self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
         if update_skips:
             self.skips = feats
 
-        return x_rec, mse, kld
+        return x_rec, rec, kld
     
     def encoding(self, x):
         _, feats = self.encoder(x)
@@ -121,7 +126,7 @@ class hsvgnet(nn.Module):
         h, feats = self.encoding(x)
         # recurrence
         self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
-        hs_pred = self.predictor(h, zs)
+        hs_pred = self.predictor(h, self.zs_prior)
         # decoding
         ## setting info
         if updata_skips:
