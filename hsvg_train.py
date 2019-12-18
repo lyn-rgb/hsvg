@@ -30,7 +30,7 @@ parser.add_argument('--seed', default=1, type=int, help='manual seed')
 
 parser.add_argument('--image_width', type=int, default=64, help='the height / width of the input image to network')
 parser.add_argument('--channels', default=1, type=int)
-parser.add_argument('--dataset', default='mnist-2', help='dataset to train with, (mnist-2|mnist-3|kth|bair)')
+parser.add_argument('--dataset', default='smmnist', help='dataset to train with, (smmnist|kth|bair)')
 parser.add_argument('--n_past', type=int, default=5, help='number of frames to condition on')
 parser.add_argument('--n_future', type=int, default=10, help='number of frames to predict during training')
 parser.add_argument('--n_eval', type=int, default=30, help='number of frames to predict during eval')
@@ -39,7 +39,7 @@ parser.add_argument('--rnn_size', type=int, default=128, help='dimensionality of
 parser.add_argument('--prior_rnn_layers', type=int, default=1, help='number of layers')
 parser.add_argument('--posterior_rnn_layers', type=int, default=1, help='number of layers')
 parser.add_argument('--predictor_rnn_layers', type=int, default=1, help='number of layers')
-parser.add_argument('--z_dim', type=int, default=16, help='dimensionality of z_t')
+parser.add_argument('--z_dim', type=int, default=4, help='dimensionality of z_t')
 parser.add_argument('--g_dim', type=int, default=128, help='dimensionality of encoder output vector and decoder input vector')
 parser.add_argument('--beta', type=float, default=0.0001, help='weighting on KL to prior')
 parser.add_argument('--model', default='dcgan', help='model type (dcgan | vgg)')
@@ -51,7 +51,10 @@ opt = parser.parse_args()
 
 print(opt)
 ## dir
-checkpoint_dir = opt.log_dir + opt.dataset + '/{}-z_dim={}-g_dim={}-n_level={}'.format(opt.model, opt.z_dim, opt.g_dim, opt.n_level)
+if opt.dataset == 'smmnist':
+    checkpoint_dir = opt.log_dir + opt.dataset +'-{}/'.format(opt.num_digits)+ '/{}-z_dim={}-g_dim={}-n_level={}'.format(opt.model, opt.z_dim, opt.g_dim, opt.n_level)
+else:
+    checkpoint_dir = opt.log_dir + opt.dataset + '/{}-z_dim={}-g_dim={}-n_level={}'.format(opt.model, opt.z_dim, opt.g_dim, opt.n_level)
 if not os.path.exists(opt.log_dir):
     os.mkdir(opt.log_dir)
 if not os.path.exists(opt.log_dir+opt.dataset):
@@ -99,7 +102,6 @@ testing_batch_generator = get_testing_batch()
 def kl_criterion(mu1, logvar1, mu2, logvar2):
     # KL( N(mu_1, sigma2_1) || N(mu_2, sigma2_2)) = 
     #   log( sqrt(
-    # 
     sigma1 = logvar1.mul(0.5).exp() 
     sigma2 = logvar2.mul(0.5).exp() 
     kld = torch.log(sigma2/sigma1) + (torch.exp(logvar1) + (mu1 - mu2)**2)/(2*torch.exp(logvar2)) - 1/2
