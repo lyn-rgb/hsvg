@@ -45,7 +45,7 @@ parser.add_argument('--beta', type=float, default=0.0001, help='weighting on KL 
 parser.add_argument('--model', default='dcgan', help='model type (dcgan | vgg)')
 parser.add_argument('--data_threads', type=int, default=5, help='number of data loading threads')
 parser.add_argument('--num_digits', type=int, default=2, help='number of digits for moving mnist')
-parser.add_argument('--last_frame_skip', action='store_true', help='if true, skip connections go between frame t and frame t+t rather than last ground truth frame')
+#parser.add_argument('--last_frame_skip', action='store_true', help='if true, skip connections go between frame t and frame t+t rather than last ground truth frame')
 
 opt = parser.parse_args()
 
@@ -109,37 +109,23 @@ def kl_criterion(mu1, logvar1, mu2, logvar2):
 ## end
 
 # --------- plotting funtions ------------------------------------
-def plot(x, epoch):
+def plot(model, x, epoch):
     nsample = 20 
-    gen_seq = [[] for i in range(nsample)]
+    gen_seq = [[x[0]] for i in range(nsample)]
     gt_seq = [x[i] for i in range(len(x))]
 
     for s in range(nsample):
-        frame_predictor.hidden = frame_predictor.init_hidden()
-        posterior.hidden = posterior.init_hidden()
-        prior.hidden = prior.init_hidden()
-        gen_seq[s].append(x[0])
-        x_in = x[0]
+        ## initialization
+        model.init_states(x[0])
+        ## prediction
         for i in range(1, opt.n_eval):
-            h = encoder(x_in)
-            if opt.last_frame_skip or i < opt.n_past:	
-                h, skip = h
-            else:
-                h, _ = h
-            h = h.detach()
             if i < opt.n_past:
-                h_target = encoder(x[i])
-                h_target = h_target[0].detach()
-                z_t, _, _ = posterior(h_target)
-                prior(h)
-                frame_predictor(torch.cat([h, z_t], 1))
-                x_in = x[i]
-                gen_seq[s].append(x_in)
+                hs_rec, feats, zs, mus, logvars = model.reconstruction(x[i])
+                model.skips = feats
+                gen_seq[s].append(x[i])
             else:
-                z_t, _, _ = prior(h)
-                h = frame_predictor(torch.cat([h, z_t], 1)).detach()
-                x_in = decoder([h, skip]).detach()
-                gen_seq[s].append(x_in)
+                x_pred = model.inference()
+                gen_seq[s].append(x_pred)
 
     to_plot = []
     gifs = [ [] for t in range(opt.n_eval) ]
@@ -180,37 +166,25 @@ def plot(x, epoch):
                 row.append(gen_seq[s][t][i])
             gifs[t].append(row)
 
-    fname = '%s/gen/sample_%d.png' % (opt.log_dir, epoch) 
+    fname = '%s/gen/sample_%d.png' % (checkpoint_dir, epoch) 
     utils.save_tensors_image(fname, to_plot)
 
-    fname = '%s/gen/sample_%d.gif' % (opt.log_dir, epoch) 
+    fname = '%s/gen/sample_%d.gif' % (checkpoint_dir, epoch) 
     utils.save_gif(fname, gifs)
 
 
-def plot_rec(x, epoch):
-    frame_predictor.hidden = frame_predictor.init_hidden()
-    posterior.hidden = posterior.init_hidden()
-    gen_seq = []
-    gen_seq.append(x[0])
-    x_in = x[0]
+def plot_rec(model, x, epoch):
+    model.init_states(x[0])
+    gen_seq = [x[0]]
     for i in range(1, opt.n_past+opt.n_future):
-        h = encoder(x[i-1])
-        h_target = encoder(x[i])
-        if opt.last_frame_skip or i < opt.n_past:	
-            h, skip = h
-        else:
-            h, _ = h
-        h_target, _ = h_target
-        h = h.detach()
-        h_target = h_target.detach()
-        z_t, _, _= posterior(h_target)
         if i < opt.n_past:
-            frame_predictor(torch.cat([h, z_t], 1)) 
+            hs_rec, feats, zs, mus, logvars = model.reconstruction(x[i])
+            model.skips = feats
             gen_seq.append(x[i])
         else:
-            h_pred = frame_predictor(torch.cat([h, z_t], 1))
-            x_pred = decoder([h_pred, skip]).detach()
-            gen_seq.append(x_pred)
+            hs_rec, feats, zs, mus, logvars = model.reconstruction(x[i])
+            x_rec = model.decoding(hs_rec)
+            gen_seq.append(x_rec)
    
     to_plot = []
     nrow = min(opt.batch_size, 10)
@@ -219,50 +193,30 @@ def plot_rec(x, epoch):
         for t in range(opt.n_past+opt.n_future):
             row.append(gen_seq[t][i]) 
         to_plot.append(row)
-    fname = '%s/gen/rec_%d.png' % (opt.log_dir, epoch) 
+    fname = '%s/gen/rec_%d.png' % (checkpoint_dir, epoch) 
     utils.save_tensors_image(fname, to_plot)
 
-
 # --------- training funtions ------------------------------------
-def train(x):
-    frame_predictor.zero_grad()
-    posterior.zero_grad()
-    prior.zero_grad()
-    encoder.zero_grad()
-    decoder.zero_grad()
-
+def train(model, optimizer, x):
+    assert(len(x)>2) # at least predict 1 frame based on 2 previous frames
+    model.zero_grad()
     # initialize the hidden state.
-    frame_predictor.hidden = frame_predictor.init_hidden()
-    posterior.hidden = posterior.init_hidden()
-    prior.hidden = prior.init_hidden()
+    model.init_states(x[0])
+    x_rec, rec, kld = model(x[1], updata_skips=True)
+    
+    total_rec = 0
+    total_kld = 0
+    for i in range(2, opt.n_past+opt.n_future):
+        x_rec, rec, kld = model(x[i], updata_skips=(i < opt.n_past))
+        total_rec += rec
+        total_kld += kld
 
-    mse = 0
-    kld = 0
-    for i in range(1, opt.n_past+opt.n_future):
-        h = encoder(x[i-1])
-        h_target = encoder(x[i])[0]
-        if opt.last_frame_skip or i < opt.n_past:	
-            h, skip = h
-        else:
-            h = h[0]
-        z_t, mu, logvar = posterior(h_target)
-        _, mu_p, logvar_p = prior(h)
-        h_pred = frame_predictor(torch.cat([h, z_t], 1))
-        x_pred = decoder([h_pred, skip])
-        mse += mse_criterion(x_pred, x[i])
-        kld += kl_criterion(mu, logvar, mu_p, logvar_p)
-
-    loss = mse + kld*opt.beta
+    loss = total_rec + total_kld*opt.beta
     loss.backward()
 
-    frame_predictor_optimizer.step()
-    posterior_optimizer.step()
-    prior_optimizer.step()
-    encoder_optimizer.step()
-    decoder_optimizer.step()
-
-
-    return mse.data.cpu().numpy()/(opt.n_past+opt.n_future), kld.data.cpu().numpy()/(opt.n_future+opt.n_past)
+    optimizer.step()
+    
+    return total_rec.data.cpu().numpy()/(opt.n_past+opt.n_future - 2), total_kld.data.cpu().numpy()/(opt.n_future+opt.n_past - 2)
 
 def main():
     # --------- logging ------------------------------------------
@@ -373,7 +327,7 @@ def main():
             torch.save({
                 'epoch': epoch,
                 'hsvg_net': hsvg_net.state_dict(),
-                'hsvg_optimizer': hsvg_optimizer},
+                'hsvg_optimizer': hsvg_optimizer.state_dict()},
                 file_path)
             print('{} was saved.'.format(file_path))
 
