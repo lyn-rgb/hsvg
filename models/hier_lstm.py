@@ -69,7 +69,7 @@ class multi_level_predictor(nn.Module):
             out = self.hier_predictor[l](torch.cat([embedded_input, z[l]], -1), out)
             out_list.append(out)
             
-        return torch.cat(out_list, -1)
+        return out_list
 
 class base_gaussian(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_layers):
