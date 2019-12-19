@@ -78,16 +78,20 @@ class hsvgnet(nn.Module):
         ## skip connect
         self.skips = None
         self.prev_h = None
+    
+    def reconstruction(self, x):
+        h, feats = self.encoding(x)
+        zs, mus, logvars = self.posterior(h)
+        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(self.prev_h)
+        hs_rec = self.predictor(self.prev_h, zs)
+        self.prev_h = h
+        return hs_rec, feats, zs, mus, logvars
 
     def forward(self, x, update_skips=False):
-        ## forward
-        # encoding
-        h, feats = self.encoding(x)
-        # recurrence 
-        zs, mus, logvars = self.posterior(h)
-        hs_rec = self.predictor(self.prev_h, zs)
+        # reconstruction
+        hs_rec, feats, zs, mus, logvars = self.reconstruction(x)
         # decoding
-        x_rec = self.decoding(hs_rec, self.skips)
+        x_rec = self.decoding(hs_rec)
         ## Losses
         rec = 0.0
         kld = 0.0
@@ -100,12 +104,9 @@ class hsvgnet(nn.Module):
             prior_mu = torch.cat(self.mus_prior, -1)
             prior_logvar = torch.cat(self.logvars_prior, -1)
             kld = self.kld_criterion(posterior_mu, posterior_logvar, prior_mu, prior_logvar)
-        ## setting info
-        self.prev_h = h
-        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+        
         if update_skips:
             self.skips = feats
-
         return x_rec, rec, kld
     
     def encoding(self, x):
@@ -116,22 +117,18 @@ class hsvgnet(nn.Module):
         h = self.out_layer(torch.cat([f1, f2, f3], dim=1)).view(-1, self.gdim)
         return h, feats
     
-    def decoding(self, hs, skips):
+    def decoding(self, hs):
         h = torch.cat(hs, -1)
-        return self.decoder(h skips)
+        return self.decoder(h self.skips)
 
-    def inference(self, x, update_skips=False):
-        ## forward
-        # encoding
-        h, feats = self.encoding(x)
+    def inference(self):
         # recurrence
-        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
-        hs_pred = self.predictor(h, self.zs_prior)
+        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(self.prev_h)
+        hs_pred = self.predictor(self.prev_h, self.zs_prior)
         # decoding
-        ## setting info
-        if updata_skips:
-            self.skips = feats
-        x_pred = self.decoding(hs_pred, self.skips)
+        x_pred = self.decoding(hs_pred)
+        # encoding
+        self.prev_h, _ = self.encoding(x_pred)
         
         return x_pred
     
@@ -149,11 +146,14 @@ class hsvgnet(nn.Module):
         h, feats = self.encoding(x)
         ### initialize posterior
         zs_init, mus_init, logvars_init = self.posterior(h)
-        self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
-
+        #self.zs_prior, self.mus_prior, self.logvars_prior = self.prior(h)
+        self.prev_h = h
         self.skips = feats
 
-
+    def eval(self):
+        self.posterior.eval()
+        self.prior.eval()
+        self.predictor.eval()
 
 
 
