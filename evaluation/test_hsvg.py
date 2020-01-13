@@ -169,7 +169,8 @@ def make_gifs(x, idx, name):
     nsample = opt.nsample
     ssim = np.zeros((opt.batch_size, nsample, opt.n_future))
     psnr = np.zeros((opt.batch_size, nsample, opt.n_future))
-
+    # variance
+    var_np = np.zeros((opt.batch_size, nsample, opt.n_future, opt.z_dim))
     all_gen = []
     gt_seq = [x[i].data.cpu().numpy() for i in range(opt.n_past, opt.n_eval)]
 
@@ -189,11 +190,18 @@ def make_gifs(x, idx, name):
                 x_pred = hsvg_net.inference()
                 gen_seq.append(x_pred.data.cpu().numpy())
                 all_gen[s].append(x_pred)
+                
+                logvar = torch.cat(hsvg_net.logvars_prior, -1)
+                var = torch.exp(logvar)  # BxC
+                var_np[:,s, i - opt.n_past,:] = var.data.cpu().numpy()
 
         _, ssim[:, s, :], psnr[:, s, :] = utils.eval_seq(gt_seq, gen_seq)
     
     best_ssim = np.zeros((opt.batch_size, opt.n_future))
     best_psnr = np.zeros((opt.batch_size, opt.n_future))
+
+    best_ssim_var = np.zeros((opt.batch_size, opt.n_future, opt.z_dim))
+    best_psnr_var = np.zeros((opt.batch_size, opt.n_future, opt.z_dim))
     ###### ssim ######
     for i in range(opt.batch_size):
         gifs = [ [] for t in range(opt.n_eval) ]
@@ -202,10 +210,14 @@ def make_gifs(x, idx, name):
         mean_ssim = np.mean(ssim[i], 1)
         ordered = np.argsort(mean_ssim)
         best_ssim[i,:] = ssim[i,ordered[-1],:]
+        # best ssim var
+        best_ssim_var[i,:,:] = var_np[i, ordered[-1], :, :]
 
         mean_psnr = np.mean(psnr[i], 1)
         ordered_p = np.argsort(mean_psnr)
         best_psnr[i,:] = psnr[i, ordered_p[-1],:]
+        # best psnr var
+        best_psnr_var[i,:,:] = var_np[i, ordered_p[-1], :, :]
 
         rand_sidx = [np.random.randint(nsample) for s in range(3)]
 
@@ -240,11 +252,13 @@ def make_gifs(x, idx, name):
         # -- generate samples
         to_plot = []
         gts = []
+        best_s = []
         best_p = []
         rand_samples = [[] for s in range(len(rand_sidx))]
         for t in range(opt.n_eval):
             # gt
             gts.append(x[t][i])
+            best_s.append(all_gen[ordered[-1]][t][i])
             best_p.append(all_gen[ordered_p[-1]][t][i])
 
             # sample
@@ -252,13 +266,14 @@ def make_gifs(x, idx, name):
                 rand_samples[s].append(all_gen[rand_sidx[s]][t][i])
 
         to_plot.append(gts)
+        to_plot.append(best_s)
         to_plot.append(best_p)
         for s in range(len(rand_sidx)):
             to_plot.append(rand_samples[s])
         fname = '%s/quality_results/%s_%d.png' % (opt.log_dir, name, idx+i)
         utils.save_tensors_image(fname, to_plot)
 
-    return best_ssim, best_psnr
+    return best_ssim, best_psnr, best_ssim_var, best_psnr_var
 
 def add_border(x, color, pad=1):
     w = x.size()[1]
@@ -318,39 +333,54 @@ def plot_figure(data_path, name, alpha=0.05):
     plt.savefig("%s/quantity_results/%s.png"%(opt.log_dir, name))
 
 def main():
-    ssim_train = []
-    psnr_train = []
+    #ssim_train = []
+    #psnr_train = []
     ssim_test = []
     psnr_test = []
+
+    ssim_var_test = []
+    psnr_var_test = []
 
     print('Start Testing ==>')
     for i in range(0, opt.N, opt.batch_size):
         # plot train
+        '''
         train_x = next(training_batch_generator)
         ssim, psnr, ccm_pred, ccm_gt = make_gifs(train_x, i, 'train')
         ssim_train.append(ssim)
         psnr_train.append(psnr)
+        '''
 
         # plot test
         test_x = next(testing_batch_generator)
-        ssim, psnr, ccm_pred, ccm_gt = make_gifs(test_x, i, 'test')
+        ssim, psnr, ssim_var, psnr_var = make_gifs(test_x, i, 'test')
         ssim_test.append(ssim)
         psnr_test.append(psnr)
 
-        print('%-th video clip was tested <==')
+        ssim_var_test.append(ssim_var)
+        psnr_var_test.append(psnr_var)
 
-    ssim_train = np.concatenate(ssim_train, axis=0)
-    psnr_train = np.concatenate(psnr_train, axis=0)
+        print('%d-th video clip was tested <=='%(i))
+
+    #ssim_train = np.concatenate(ssim_train, axis=0)
+    #psnr_train = np.concatenate(psnr_train, axis=0)
     ssim_test = np.concatenate(ssim_test, axis=0)
     psnr_test = np.concatenate(psnr_test, axis=0)
+    
+    ssim_var_test = np.concatenate(ssim_var_test, axis=0)
+    psnr_var_test = np.concatenate(psnr_var_test, axis=0)
+    
+    #print(ssim_train.shape)
+    #np.save('%s/quantity_results/ssim_train'%(opt.log_dir),ssim_train)
+    #np.save('%s/quantity_results/psnr_train'%(opt.log_dir),psnr_train)
+    np.save('%s/quantity_results/ssim_test_%d'%(opt.log_dir, opt.N),ssim_test)
+    np.save('%s/quantity_results/psnr_test_%d'%(opt.log_dir, opt.N),psnr_test)
 
-    print(ssim_train.shape)
-    np.save('%s/quantity_results/ssim_train'%(opt.log_dir),ssim_train)
-    np.save('%s/quantity_results/psnr_train'%(opt.log_dir),psnr_train)
-    np.save('%s/quantity_results/ssim_test'%(opt.log_dir),ssim_test)
-    np.save('%s/quantity_results/psnr_test'%(opt.log_dir),psnr_test)
+    np.save('%s/quantity_results/ssim_var_test_%d'%(opt.log_dir, opt.N),ssim_var_test)
+    np.save('%s/quantity_results/psnr_var_test_%d'%(opt.log_dir, opt.N),psnr_var_test)
 
-    plot_figure('%s/quantity_results/ssim_train.npy'%(opt.log_dir), 'ssim_train')
+    plot_figure('%s/quantity_results/ssim_test.npy'%(opt.log_dir), 'ssim_test_%d'%(opt.N))
 
 if __name__=='__main__':
-    main()
+    with torch.no_grad():
+        main()
